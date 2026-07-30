@@ -1,12 +1,12 @@
 #!/bin/bash
 # 生成运行中的 opencode session 列表（支持同一 session 多个 PID）
 # 用法: bash gen_running_sessions.sh
-# 输出: /workspace/OC_session_restore/running_sess_id.txt
+# 输出: <脚本目录>/running_sess_id.txt
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DB_FILE="/root/.local/share/opencode/opencode.db"
+DB_FILE="${HOME}/.local/share/opencode/opencode.db"
 OUTPUT_FILE="${SCRIPT_DIR}/running_sess_id.txt"
 
 if [ ! -f "$DB_FILE" ]; then
@@ -14,6 +14,7 @@ if [ ! -f "$DB_FILE" ]; then
   exit 1
 fi
 
+export DB_FILE OUTPUT_FILE
 python3 << 'PYEOF'
 import sqlite3
 import os
@@ -21,8 +22,29 @@ import subprocess
 import re
 from collections import defaultdict
 
-DB_FILE = "/root/.local/share/opencode/opencode.db"
-OUTPUT_FILE = os.path.join("/workspace/OC_session_restore", "running_sess_id.txt")
+DB_FILE = os.environ["DB_FILE"]
+OUTPUT_FILE = os.environ["OUTPUT_FILE"]
+
+
+def get_cwd(pid):
+    """Cross-platform CWD lookup. /proc on Linux, lsof on macOS/BSD."""
+    if os.uname().sysname == "Linux":
+        try:
+            return os.readlink(f"/proc/{pid}/cwd")
+        except (OSError, PermissionError):
+            return None
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-F", "n"],
+            capture_output=True, text=True, timeout=2,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("n"):
+                return line[1:] or None
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
 
 conn = sqlite3.connect(DB_FILE)
 cursor = conn.cursor()
@@ -60,10 +82,7 @@ for line in result.stdout.splitlines():
         if m:
             session_id = m.group(1)
 
-    try:
-        cwd = os.readlink(f"/proc/{pid}/cwd")
-    except (OSError, PermissionError):
-        cwd = None
+    cwd = get_cwd(pid)
 
     processes.append({
         "pid": pid,
